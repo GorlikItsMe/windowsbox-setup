@@ -1446,6 +1446,15 @@ if (Test-Planned 'T3Tools.T3Code') {
         'Open the link / scan the QR code on the other device. Needs Tailscale logged in.')
 }
 
+# Deliberately not automated: excluding folders turns real-time scanning off
+# there, so it should be a conscious decision.
+$avExclusions = @((Join-Path $env:USERPROFILE '.t3'), (Join-Path $env:USERPROFILE 'source\repos'))
+Add-Step 'Optional: exclude dev folders from Microsoft Defender (faster builds and git)' @(
+    'Defender will NOT scan these folders anymore - only do it if you trust what goes in there.',
+    'Run in an administrator PowerShell:',
+    ('Add-MpPreference -ExclusionPath {0}' -f (($avExclusions | ForEach-Object { '"{0}"' -f $_ }) -join ', ')),
+    'Undo: the same command with Remove-MpPreference.')
+
 if (-not $opt.OnlyRemote) {
     $body = @('gh auth login --web --git-protocol ssh',
               'Answer "yes" to uploading your SSH public key - no copy-paste needed.')
