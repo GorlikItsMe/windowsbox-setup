@@ -53,7 +53,6 @@ param(
     [switch] $NoRemote,
     [switch] $NoT3Autostart,
     [switch] $OnlyRemote,
-    [switch] $Reboot,
     [string] $GitUserName = '',
     [string] $GitUserEmail = '',
     [string] $Answers = ''
@@ -847,7 +846,6 @@ $opt = [ordered]@{
     Remote         = (([bool]$CONFIG.Remote.EnableNoVNC) -and (-not $NoRemote))
     AutostartT3Code = (([bool]$CONFIG.Autostart.T3Code) -and (-not $NoT3Autostart))
     OnlyRemote     = [bool]$OnlyRemote
-    Reboot         = [bool]$Reboot
     GitUserName    = $GitUserName
     GitUserEmail   = $GitUserEmail
 }
@@ -893,7 +891,6 @@ if (-not $Revert -and -not $Yes -and -not $Answers -and -not $WhatIfOnly -and -n
         $opt.GitUserName  = Read-Text '    git user.name'  $opt.GitUserName
         $opt.GitUserEmail = Read-Text '    git user.email' $opt.GitUserEmail
     }
-    $opt.Reboot = Read-YesNo '  reboot when finished' $opt.Reboot
     Write-Host ''
 }
 
@@ -964,8 +961,8 @@ Write-Host '  win-setup: debloat + developer toolchain' -ForegroundColor White
 Write-Host ('  {0} | {1}' -f $env:COMPUTERNAME, $(if ($WhatIfOnly) { 'DRY RUN' } else { (Get-Date -Format 'yyyy-MM-dd HH:mm') })) -ForegroundColor DarkGray
 Write-Host '==========================================================' -ForegroundColor White
 Write-Log ("log: {0}" -f $script:LogFile)
-Write-Log ("debloat: {0} (aggressive: {1}) | optional: {2} | remote: {3} | t3 autostart: {4} | reboot: {5}" -f `
-    $opt.Debloat, $opt.Aggressive, $opt.Optional, $opt.Remote, $opt.AutostartT3Code, $opt.Reboot)
+Write-Log ("debloat: {0} (aggressive: {1}) | optional: {2} | remote: {3} | t3 autostart: {4}" -f `
+    $opt.Debloat, $opt.Aggressive, $opt.Optional, $opt.Remote, $opt.AutostartT3Code)
 
 $os = Get-CimInstance Win32_OperatingSystem
 if ([int]$os.BuildNumber -lt 22000) { Write-Log 'optimised for Windows 11; older builds may differ' 'WARN' }
@@ -1354,12 +1351,6 @@ if (-not $WhatIfOnly -and (Test-Path -LiteralPath ($sshKey + '.pub'))) {
     Write-Host ("  " + (Get-Content -LiteralPath ($sshKey + '.pub') -Raw).Trim()) -ForegroundColor DarkGray
     Write-Host '  Then: gh auth login   (or paste the key in the browser)' -ForegroundColor DarkGray
     Write-Host ''
-}
-
-if ($opt.Reboot -and -not $WhatIfOnly) {
-    Write-Log 'rebooting in 15 seconds - press Ctrl+C to abort' 'WARN'
-    Start-Sleep -Seconds 15
-    Restart-Computer -Force
 }
 
 if ($Pause -and (Test-CanPrompt)) {

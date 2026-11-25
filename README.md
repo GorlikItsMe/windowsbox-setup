@@ -64,7 +64,6 @@ shortcut to `shell:startup` that launches it and minimizes the main window.
 | `-NoT3Autostart` | no T3 Code autostart |
 | `-OnlyRemote` | only (re)build noVNC and T3 autostart |
 | `-GitUserName`, `-GitUserEmail` | set git identity without the prompt |
-| `-Reboot` | restart when done |
 | `-Revert` | open Win11Debloat's restore window (its own registry backups) |
 
 Running from a local copy: `.\win-setup.ps1 -WhatIfOnly`, `.\win-setup.ps1 -Yes -NoOptional`.
