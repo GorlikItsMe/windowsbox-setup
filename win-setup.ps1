@@ -88,7 +88,6 @@ $CONFIG = @{
             '-DisableLocationServices'
             '-DisableFindMyDevice'
             '-DisableFastStartup'
-            '-DisableDeliveryOptimization'
         )
         # Always applied, regardless of -Aggressive. Your personal taste.
         PersonalArgs = @(
@@ -97,6 +96,7 @@ $CONFIG = @{
             '-RevertContextMenu'      # classic Windows 10 right-click menu
             '-ExplorerToThisPC'       # Explorer opens at This PC
             '-ClearStart'             # drop the pinned Store junk from Start
+            '-DisableDeliveryOptimization'  # no sharing of downloaded updates with other PCs
         )
     }
 
@@ -124,6 +124,8 @@ $CONFIG = @{
         ExecutionPolicy     = 'RemoteSigned'
         SetTimezone         = ''      # e.g. 'Central European Standard Time'
         DisableDiagTrack    = $true   # stop the telemetry service (Win11Debloat only sets registry policies)
+        DisableHibernation  = $true   # powercfg /h off - removes hiberfil.sys
+        EnableStorageSense  = $true   # weekly cleanup: temp files + recycle bin items older than 30 days
     }
 
     # Browser-based remote access. TightVNC listens on loopback only, with VNC
@@ -1134,6 +1136,30 @@ if ($s.DisableDiagTrack -and -not $opt.OnlyRemote) {
         }
     }
 }
+if ($s.DisableHibernation -and -not $opt.OnlyRemote) {
+    if ($WhatIfOnly) { Write-Log 'would turn hibernation off (powercfg /h off)' }
+    else {
+        & powercfg.exe /hibernate off *> $null
+        if ($LASTEXITCODE -eq 0) { Write-Log 'hibernation off (hiberfil.sys removed)' 'OK' }
+        else { Write-Log 'hibernation is not available on this machine' 'SKIP' }
+    }
+}
+if ($s.EnableStorageSense -and -not $opt.OnlyRemote) {
+    if ($WhatIfOnly) { Write-Log 'would enable Storage Sense (weekly: temp files, recycle bin > 30 days)' }
+    else {
+        $ss = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\StorageSense\Parameters\StoragePolicy'
+        if (-not (Test-Path $ss)) { New-Item -Path $ss -Force | Out-Null }
+        $values = [ordered]@{
+            '01'   = 1    # Storage Sense on
+            '04'   = 1    # delete temporary files
+            '08'   = 1    # empty the recycle bin...
+            '256'  = 30   # ...for items older than 30 days
+            '2048' = 7    # run every week
+        }
+        foreach ($name in $values.Keys) { Set-ItemProperty -Path $ss -Name $name -Value $values[$name] -Type DWord -Force }
+        Write-Log 'Storage Sense on (weekly: temp files, recycle bin > 30 days)' 'OK'
+    }
+}
 
 # ==========================================================================
 #  PHASE 3 - packages
@@ -1454,6 +1480,21 @@ Add-Step 'Optional: exclude dev folders from Microsoft Defender (faster builds a
     'Run in an administrator PowerShell:',
     ('Add-MpPreference -ExclusionPath {0}' -f (($avExclusions | ForEach-Object { '"{0}"' -f $_ }) -join ', ')),
     'Undo: the same command with Remove-MpPreference.')
+
+# Memory Integrity (HVCI) costs a lot of CPU in a VM. Also a manual step:
+# it is a security feature. Only shown when it is actually running.
+$hvciOn = $false
+try {
+    $dg = Get-CimInstance -Namespace 'root/Microsoft/Windows/DeviceGuard' -ClassName Win32_DeviceGuard -ErrorAction Stop
+    $hvciOn = @($dg.SecurityServicesRunning) -contains 2
+} catch { }
+if ($hvciOn) {
+    Add-Step 'Optional: turn off Memory Integrity (noticeably faster VM, weaker kernel protection)' @(
+        'Windows Security -> Device security -> Core isolation -> Memory integrity: Off,',
+        'or in an administrator PowerShell:',
+        "Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity' -Name Enabled -Value 0 -Type DWord",
+        'Then reboot. Undo: set it back to 1 (or flip the switch again).')
+}
 
 if (-not $opt.OnlyRemote) {
     $body = @('gh auth login --web --git-protocol ssh',
