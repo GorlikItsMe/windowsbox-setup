@@ -58,7 +58,6 @@ shortcut to `shell:startup` that launches it and minimizes the main window.
 | `-Yes` | no questions, use defaults |
 | `-NoDebloat` | skip Win11Debloat |
 | `-Aggressive` | extra debloat: Copilot, Recall, widgets, Xbox Game Bar, location, ... |
-| `-NoRestorePoint` | don't create a restore point before debloating |
 | `-RemoveOneDrive` | uninstall OneDrive |
 | `-NoOptional` | Core packages only |
 | `-NoRemote` | no TightVNC / noVNC |

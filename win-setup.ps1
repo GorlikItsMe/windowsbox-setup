@@ -49,7 +49,6 @@ param(
     [switch] $NoDebloat,
     [switch] $Aggressive,
     [switch] $NoOptional,
-    [switch] $NoRestorePoint,
     [switch] $RemoveOneDrive,
     [switch] $NoRemote,
     [switch] $NoT3Autostart,
@@ -844,7 +843,6 @@ $opt = [ordered]@{
     Debloat        = (-not $NoDebloat)
     Aggressive     = [bool]$Aggressive
     Optional       = (-not $NoOptional)
-    RestorePoint   = (-not $NoRestorePoint)
     RemoveOneDrive = [bool]$RemoveOneDrive
     Remote         = (([bool]$CONFIG.Remote.EnableNoVNC) -and (-not $NoRemote))
     AutostartT3Code = (([bool]$CONFIG.Autostart.T3Code) -and (-not $NoT3Autostart))
@@ -874,7 +872,6 @@ if (-not $opt.GitUserEmail) { $opt.GitUserEmail = $CONFIG.Git.UserEmail }
 if ($opt.OnlyRemote) {
     $opt.Debloat         = $false
     $opt.Optional        = $false
-    $opt.RestorePoint    = $false
     $opt.Remote          = $true
     $opt.AutostartT3Code = $true
 }
@@ -886,8 +883,7 @@ if (-not $Revert -and -not $Yes -and -not $Answers -and -not $WhatIfOnly -and -n
     Write-Host ''
     $opt.Debloat = Read-YesNo '  debloat Windows (bundled apps, telemetry, ads)' $opt.Debloat
     if ($opt.Debloat) {
-        $opt.Aggressive   = Read-YesNo '    aggressive (Copilot, Recall, widgets, Xbox bar, location)' $opt.Aggressive
-        $opt.RestorePoint = Read-YesNo '    create a restore point first' $opt.RestorePoint
+        $opt.Aggressive = Read-YesNo '    aggressive (Copilot, Recall, widgets, Xbox bar, location)' $opt.Aggressive
     }
     $opt.Optional = Read-YesNo '  install optional group (Chrome, VS Code Insiders, Claude Desktop)' $opt.Optional
     $opt.RemoveOneDrive = Read-YesNo '  remove OneDrive completely' $opt.RemoveOneDrive
@@ -968,8 +964,8 @@ Write-Host '  win-setup: debloat + developer toolchain' -ForegroundColor White
 Write-Host ('  {0} | {1}' -f $env:COMPUTERNAME, $(if ($WhatIfOnly) { 'DRY RUN' } else { (Get-Date -Format 'yyyy-MM-dd HH:mm') })) -ForegroundColor DarkGray
 Write-Host '==========================================================' -ForegroundColor White
 Write-Log ("log: {0}" -f $script:LogFile)
-Write-Log ("debloat: {0} (aggressive: {1}) | optional: {2} | restore point: {3} | remote: {4} | t3 autostart: {5} | reboot: {6}" -f `
-    $opt.Debloat, $opt.Aggressive, $opt.Optional, $opt.RestorePoint, $opt.Remote, $opt.AutostartT3Code, $opt.Reboot)
+Write-Log ("debloat: {0} (aggressive: {1}) | optional: {2} | remote: {3} | t3 autostart: {4} | reboot: {5}" -f `
+    $opt.Debloat, $opt.Aggressive, $opt.Optional, $opt.Remote, $opt.AutostartT3Code, $opt.Reboot)
 
 $os = Get-CimInstance Win32_OperatingSystem
 if ([int]$os.BuildNumber -lt 22000) { Write-Log 'optimised for Windows 11; older builds may differ' 'WARN' }
@@ -1009,7 +1005,6 @@ if ($opt.Debloat) {
     Write-Log 'PHASE 1/4 - debloat (Win11Debloat)' 'STEP'
 
     $debloatArgs = @($CONFIG.Debloat.BaseArgs) + @($CONFIG.Debloat.PersonalArgs)
-    if ($opt.RestorePoint) { $debloatArgs += '-CreateRestorePoint' }
     if ($opt.Aggressive)   { $debloatArgs += @($CONFIG.Debloat.AggressiveArgs) }
 
     if ($WhatIfOnly) {
