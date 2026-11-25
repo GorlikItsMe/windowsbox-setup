@@ -1065,8 +1065,19 @@ if ($s.EnableDeveloperMode) {
 if ($s.ExecutionPolicy) {
     if ($WhatIfOnly) { Write-Log ("would set ExecutionPolicy to {0}" -f $s.ExecutionPolicy) }
     else {
-        Set-ExecutionPolicy -Scope LocalMachine -ExecutionPolicy $s.ExecutionPolicy -Force
-        Write-Log ("ExecutionPolicy = {0}" -f $s.ExecutionPolicy) 'OK'
+        # This process runs with -ExecutionPolicy Bypass (Process scope), so
+        # PowerShell reports an "overridden by a more specific scope" error even
+        # though LocalMachine was written. Swallow it and check the real value.
+        try { Set-ExecutionPolicy -Scope LocalMachine -ExecutionPolicy $s.ExecutionPolicy -Force -ErrorAction Stop } catch { }
+        $machine = Get-ExecutionPolicy -Scope LocalMachine
+        $gpo = @('MachinePolicy', 'UserPolicy' | ForEach-Object { Get-ExecutionPolicy -Scope $_ } | Where-Object { $_ -ne 'Undefined' })
+        if ("$machine" -ne $s.ExecutionPolicy) {
+            Write-Log ("could not set ExecutionPolicy (LocalMachine is {0})" -f $machine) 'WARN'
+        } elseif ($gpo.Count -gt 0) {
+            Write-Log ("ExecutionPolicy = {0}, but Group Policy enforces {1}" -f $machine, $gpo[0]) 'WARN'
+        } else {
+            Write-Log ("ExecutionPolicy = {0}" -f $machine) 'OK'
+        }
     }
 }
 if ($s.SetTimezone) {
