@@ -33,7 +33,7 @@ login, noVNC URL, `t3 pair --tailscale`, `gh auth login`, `claude auth login`,
 | | |
 |---|---|
 | **Core** | Git, GitHub CLI, PowerShell 7, Windows Terminal, 7-Zip, WinDirStat, VS Code, Cursor, Claude Code, opencode, Antigravity, ripgrep, fd, fzf, jq, curl, FFmpeg, fastfetch, Node.js LTS, Bun, pnpm, Python 3.15, uv, .NET SDK 10, Tailscale, T3 Code |
-| **Optional** | Chrome, VS Code Insiders, Claude Desktop |
+| **Optional** | VS Code Insiders, Claude Desktop |
 
 Everything is configured in the `$CONFIG` block at the top of `win-setup.ps1`.
 

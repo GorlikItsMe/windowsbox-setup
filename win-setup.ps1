@@ -170,7 +170,6 @@ $CONFIG = @{
             'Google.Antigravity'
         )
         Optional = @(
-            'Google.Chrome'
             'Microsoft.VisualStudioCode.Insiders'
             'Anthropic.Claude'                # Claude desktop app
         )
@@ -886,7 +885,7 @@ if (-not $Revert -and -not $Yes -and -not $Answers -and -not $WhatIfOnly -and -n
     if ($opt.Debloat) {
         $opt.Aggressive = Read-YesNo '    aggressive (Copilot, Recall, widgets, Xbox bar, location)' $opt.Aggressive
     }
-    $opt.Optional = Read-YesNo '  install optional group (Chrome, VS Code Insiders, Claude Desktop)' $opt.Optional
+    $opt.Optional = Read-YesNo '  install optional group (VS Code Insiders, Claude Desktop)' $opt.Optional
     $opt.RemoveOneDrive = Read-YesNo '  remove OneDrive completely' $opt.RemoveOneDrive
     $opt.Remote = Read-YesNo '  remote access: noVNC over Tailscale (TightVNC)' $opt.Remote
     $opt.AutostartT3Code = Read-YesNo '  start T3 Code minimized at login' $opt.AutostartT3Code
@@ -1436,7 +1435,6 @@ if (-not $opt.OnlyRemote) {
     if (Test-Planned 'Anysphere.Cursor')           { $apps += 'Cursor          - sign in                           https://cursor.com' }
     if (Test-Planned 'Microsoft.VisualStudioCode') { $apps += 'VS Code         - Accounts (bottom left) -> Backup and Sync Settings' }
     if (Test-Planned 'Anthropic.Claude')           { $apps += 'Claude Desktop  - sign in' }
-    if (Test-Planned 'Google.Chrome')              { $apps += 'Chrome          - sign in to sync bookmarks and passwords' }
     if ($apps.Count -gt 0) { Add-Step 'Sign in to the desktop apps' $apps }
 
     Add-Step 'Install Windows updates' @('start ms-settings:windowsupdate')
