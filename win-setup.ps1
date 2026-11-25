@@ -27,48 +27,13 @@
 
     Everything this script does is logged to %LOCALAPPDATA%\win-setup\log-*.log.
 
-.PARAMETER Yes
-    Skip the questions and use the defaults (debloat on, optional group on).
-
-.PARAMETER WhatIfOnly
-    Print the whole plan. Changes nothing, needs no admin.
-
-.PARAMETER Revert
-    Opens Win11Debloat's restore window (it restores its own registry backups).
-
-.PARAMETER Aggressive
-    Extra debloat flags on top of Win11Debloat defaults: Copilot, Recall,
-    Click to Do, widgets, chat, Xbox game bar/DVR, location, Bing, fast startup,
-    delivery optimization.
-
-.PARAMETER NoDebloat
-    Leave Windows alone, only install software.
-
-.PARAMETER NoOptional
-    Install the Core group only (no Chrome, VS Code Insiders, Claude Desktop...).
-
-.PARAMETER NoRestorePoint
-    Do not create a System Restore point before debloating.
-
-.PARAMETER RemoveOneDrive
-    Uninstall OneDrive instead of just leaving it alone.
-
-.PARAMETER Reboot
-    Restart the machine when the script is done.
-
-.PARAMETER Force
-    Reinstall packages that are already present.
-
-.PARAMETER Pause
-    Wait for ENTER before closing (used when the script relaunches itself).
+    Parameters are documented in README.md.
 
 .EXAMPLE
-    powershell -c "irm https://raw.githubusercontent.com/USER/REPO/main/win-setup.ps1 | iex"
+    powershell -c "irm https://raw.githubusercontent.com/GorlikItsMe/windowsbox-setup/main/win-setup.ps1 | iex"
 
 .EXAMPLE
     .\win-setup.ps1 -WhatIfOnly
-    .\win-setup.ps1 -Yes
-    .\win-setup.ps1 -Yes -Aggressive -RemoveOneDrive -Reboot
     .\win-setup.ps1 -Yes -NoOptional
     .\win-setup.ps1 -Revert
 #>
@@ -81,7 +46,6 @@ param(
     [switch] $WhatIfOnly,
     [switch] $Revert,
     [switch] $Pause,
-    [switch] $Force,
     [switch] $NoDebloat,
     [switch] $Aggressive,
     [switch] $NoOptional,
@@ -101,8 +65,7 @@ param(
 # ==========================================================================
 
 # Raw URL of this file, used only when the script runs through `irm | iex`
-# (there is no local file to relaunch elevated). Fill it in after you publish
-# the repo, e.g. 'https://raw.githubusercontent.com/jan/win-setup/main/win-setup.ps1'.
+# (there is no local file to relaunch elevated).
 $SourceUrl = 'https://raw.githubusercontent.com/GorlikItsMe/windowsbox-setup/main/win-setup.ps1'
 
 $CONFIG = @{
@@ -147,7 +110,6 @@ $CONFIG = @{
         Editor        = 'code --wait' # used by git commit / rebase
         CredentialHelper = 'manager'  # Git Credential Manager, ships with Git for Windows
         GenerateSshKey   = $true      # create ~/.ssh/id_ed25519 when missing
-        SshKeyComment    = ''         # defaults to UserEmail
         Aliases = [ordered]@{
             st   = 'status -sb'
             co   = 'checkout'
@@ -204,7 +166,7 @@ $CONFIG = @{
             'pnpm.pnpm'
             'Python.Python.3.15'              # newest Python in winget; bump when 3.16 ships
             'astral-sh.uv'
-            'Microsoft.DotNet.SDK.8'
+            'Microsoft.DotNet.SDK.10'         # current LTS (.NET 8 is EOL since 2026-11-10)
             'Tailscale.Tailscale'
             'T3Tools.T3Code'
             'Google.Antigravity'
@@ -214,26 +176,9 @@ $CONFIG = @{
             'Microsoft.VisualStudioCode.Insiders'
             'Anthropic.Claude'                # Claude desktop app
         )
-        # Ids that must never be installed, even if they appear in some list.
-        Excluded = @(
-            # 'Microsoft.XboxGamingOverlay'
-        )
     }
 
-    VisualStudio = @{
-        ProductId          = 'Microsoft.VisualStudio.2022.Community'
-        Workloads          = @(
-            'Microsoft.VisualStudio.Workload.ManagedDesktop'
-            'Microsoft.VisualStudio.Workload.NetWeb'
-        )
-        IncludeRecommended = $true
-    }
-
-    PostConfig = @{
-        InstallPSModules = @('Terminal-Icons', 'posh-git')   # needs pwsh 7
-        NpmGlobals       = @()                               # e.g. @('typescript')
-        BunGlobals       = @()                               # e.g. @('@opencode/cli')
-    }
+    PSModules = @('Terminal-Icons', 'posh-git')   # installed for pwsh 7
 }
 
 # ==========================================================================
@@ -242,7 +187,7 @@ $CONFIG = @{
 
 $ErrorActionPreference = 'Continue'
 $ProgressPreference    = 'SilentlyContinue'
-[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
 # --------------------------------------------------------------- plumbing --
 $script:SelfPath = $null
@@ -446,6 +391,8 @@ function Resolve-Python {
     return $null
 }
 
+# Kept as text: it is defined here and also embedded in the T3 Code launcher.
+$script:FindT3CodeExeText = @'
 function Find-T3CodeExe {
     $candidates = @(
         (Join-Path $env:LOCALAPPDATA 'Programs\t3code\T3 Code (Nightly).exe'),
@@ -454,9 +401,7 @@ function Find-T3CodeExe {
         (Join-Path $env:ProgramFiles 'T3 Code\T3 Code.exe'),
         (Join-Path ${env:ProgramFiles(x86)} 'T3 Code\T3 Code.exe')
     )
-    foreach ($p in $candidates) {
-        if ($p -and (Test-Path -LiteralPath $p)) { return $p }
-    }
+    foreach ($p in $candidates) { if ($p -and (Test-Path -LiteralPath $p)) { return $p } }
     foreach ($root in 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
                       'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
                       'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*') {
@@ -468,6 +413,8 @@ function Find-T3CodeExe {
     }
     return $null
 }
+'@
+. ([scriptblock]::Create($script:FindT3CodeExeText))
 
 function Resolve-Pwsh {
     # PowerShell 7 may be an MSI (Program Files\PowerShell\7) or an MSIX with an
@@ -667,10 +614,11 @@ function Setup-NoVnc {
         } catch { }
     }
     if (-not $tailIp) {
-        Write-Log 'Tailscale is not up - noVNC will only listen on localhost until the next start' 'WARN'
+        Write-Log 'Tailscale is not up - noVNC will only listen on localhost until the next start (run "tailscale up")' 'WARN'
     }
 
-    $urlHost = $tailIp
+    $urlHost = '127.0.0.1'
+    if ($tailIp)   { $urlHost = $tailIp }
     if ($tailName) { $urlHost = $tailName }
     $url = 'http://{0}:{1}/' -f $urlHost, $WebPort
     $script:NoVncUrl = $url
@@ -736,17 +684,9 @@ exit $LASTEXITCODE
         [void]$script:Failed.Add('noVNC (task)')
     }
 
-    # The first version kept the stack in the user profile, which SYSTEM cannot
-    # read (websockify failed with Access is denied). Drop that copy.
-    $legacy = Join-Path $script:StateDir 'novnc'
-    if ((Test-Path -LiteralPath $legacy) -and ($legacy -ne $base)) {
-        Remove-Item -LiteralPath $legacy -Recurse -Force -ErrorAction SilentlyContinue
-        Write-Log 'removed the old per-user noVNC copy' 'OK'
-    }
-
     # Probe locally so a broken proxy is reported now, not when you open the URL.
-    $probeHost = $tailIp
-    if (-not $probeHost) { $probeHost = '127.0.0.1' }
+    $probeHost = '127.0.0.1'
+    if ($tailIp) { $probeHost = $tailIp }
     $probeUrl = 'http://{0}:{1}/vnc.html' -f $probeHost, $WebPort
     $alive = $false
     for ($i = 0; $i -lt 12; $i++) {
@@ -793,26 +733,7 @@ function Write-StartupLog {
     try { Add-Content -LiteralPath $logFile -Value ("{0}  {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Message) -Encoding UTF8 } catch { }
 }
 
-function Find-T3CodeExe {
-    $candidates = @(
-        (Join-Path $env:LOCALAPPDATA 'Programs\t3code\T3 Code (Nightly).exe'),
-        (Join-Path $env:LOCALAPPDATA 'Programs\t3code\T3 Code.exe'),
-        (Join-Path $env:LOCALAPPDATA 'Programs\T3 Code\T3 Code.exe'),
-        (Join-Path $env:ProgramFiles 'T3 Code\T3 Code.exe'),
-        (Join-Path ${env:ProgramFiles(x86)} 'T3 Code\T3 Code.exe')
-    )
-    foreach ($p in $candidates) { if ($p -and (Test-Path -LiteralPath $p)) { return $p } }
-    foreach ($root in 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
-                      'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
-                      'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*') {
-        foreach ($e in @(Get-ItemProperty -Path $root -ErrorAction SilentlyContinue |
-                         Where-Object { $_.DisplayName -like 'T3 Code*' -and $_.DisplayIcon })) {
-            $p = ($e.DisplayIcon -split ',')[0].Trim().Trim('"')
-            if ($p -and (Test-Path -LiteralPath $p)) { return $p }
-        }
-    }
-    return $null
-}
+__FIND_T3CODE_EXE__
 
 $exe = Find-T3CodeExe
 if (-not $exe) { Write-StartupLog 'T3 Code executable not found'; exit 1 }
@@ -900,6 +821,7 @@ if (-not $done) { Write-StartupLog 'T3 Code main window did not appear in time' 
 exit 0
 '@
 
+    $launcherText = $launcherText.Replace('__FIND_T3CODE_EXE__', $script:FindT3CodeExeText)
     [IO.File]::WriteAllText($launcher, $launcherText, (New-Object System.Text.UTF8Encoding($false)))
 
     $exe = Find-T3CodeExe
@@ -957,8 +879,6 @@ if ($opt.OnlyRemote) {
     $opt.AutostartT3Code = $true
 }
 
-# Nothing to undo? Say it before bothering with UAC.
-
 # ----------------------------------------------------------------- menu ----
 if (-not $Revert -and -not $Yes -and -not $Answers -and -not $WhatIfOnly -and -not $opt.OnlyRemote -and (Test-CanPrompt)) {
     Write-Host ''
@@ -966,10 +886,10 @@ if (-not $Revert -and -not $Yes -and -not $Answers -and -not $WhatIfOnly -and -n
     Write-Host ''
     $opt.Debloat = Read-YesNo '  debloat Windows (bundled apps, telemetry, ads)' $opt.Debloat
     if ($opt.Debloat) {
-        $opt.Aggressive = Read-YesNo '    aggressive (Copilot, Recall, widgets, Xbox bar, location)' $opt.Aggressive
+        $opt.Aggressive   = Read-YesNo '    aggressive (Copilot, Recall, widgets, Xbox bar, location)' $opt.Aggressive
+        $opt.RestorePoint = Read-YesNo '    create a restore point first' $opt.RestorePoint
     }
-    $opt.Optional = Read-YesNo '  install optional group (Chrome, VS 2022, Claude Desktop...)' $opt.Optional
-    $opt.RestorePoint = Read-YesNo '  create a restore point first' $opt.RestorePoint
+    $opt.Optional = Read-YesNo '  install optional group (Chrome, VS Code Insiders, Claude Desktop)' $opt.Optional
     $opt.RemoveOneDrive = Read-YesNo '  remove OneDrive completely' $opt.RemoveOneDrive
     $opt.Remote = Read-YesNo '  remote access: noVNC over Tailscale (TightVNC)' $opt.Remote
     $opt.AutostartT3Code = Read-YesNo '  start T3 Code minimized at login' $opt.AutostartT3Code
@@ -987,26 +907,13 @@ if (-not (Test-IsAdmin) -and -not $WhatIfOnly) {
 
     # `irm | iex`: no file on disk, so fetch a copy of ourselves first.
     if (-not $self) {
-        $url = $SourceUrl
-        if ($env:WIN_SETUP_URL) { $url = $env:WIN_SETUP_URL }
-        if (-not $url -or $url -match 'USER/REPO') {
-            Write-Host ''
-            Write-Host '  This script must run as administrator, but it was pasted with' -ForegroundColor Yellow
-            Write-Host '  "irm | iex" so there is no local file to relaunch.' -ForegroundColor Yellow
-            Write-Host '  Either fill in $SourceUrl at the top of the script, or run:' -ForegroundColor Yellow
-            Write-Host ''
-            Write-Host '    irm <url> -OutFile "$env:TEMP\win-setup.ps1"' -ForegroundColor White
-            Write-Host '    Start-Process powershell -Verb RunAs -ArgumentList ''-NoProfile'',''-ExecutionPolicy'',''Bypass'',''-File'',''"$env:TEMP\win-setup.ps1"''' -ForegroundColor White
-            Write-Host ''
-            exit 1
-        }
         $self = Join-Path $script:StateDir 'win-setup.ps1'
         Write-Host '  Downloading a local copy of the script...' -ForegroundColor Yellow
         try {
-            Invoke-WebRequest -Uri $url -OutFile $self -UseBasicParsing -ErrorAction Stop
+            Invoke-WebRequest -Uri $SourceUrl -OutFile $self -UseBasicParsing -ErrorAction Stop
         } catch {
             Write-Host ("  download failed: {0}" -f $_.Exception.Message) -ForegroundColor Red
-            Write-Host ("  source: {0}" -f $url) -ForegroundColor Red
+            Write-Host ("  source: {0}" -f $SourceUrl) -ForegroundColor Red
             exit 1
         }
         Write-Host ("  saved to {0}" -f $self) -ForegroundColor DarkGray
@@ -1020,7 +927,6 @@ if (-not (Test-IsAdmin) -and -not $WhatIfOnly) {
     Write-Host '  Relaunching as administrator (accept the UAC prompt)...' -ForegroundColor Yellow
     $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"{0}"' -f $self),
                  '-Answers', ('"{0}"' -f $script:AnswersFile), '-Pause')
-    if ($Force) { $argList += '-Force' }
     if ($Revert) { $argList += '-Revert' }
 
     try {
@@ -1035,7 +941,6 @@ if (-not (Test-IsAdmin) -and -not $WhatIfOnly) {
     exit 0
 }
 
-# ==========================================================================
 # ==========================================================================
 #  MODE: revert - Win11Debloat's own restore window
 # ==========================================================================
@@ -1057,7 +962,6 @@ if ($Revert) {
 }
 
 # ----------------------------------------------------------------- banner --
-$started = Get-Date
 Write-Host ''
 Write-Host '==========================================================' -ForegroundColor White
 Write-Host '  win-setup: debloat + developer toolchain' -ForegroundColor White
@@ -1090,15 +994,14 @@ if (-not $WhatIfOnly) {
     $sysDrive = $env:SystemDrive.TrimEnd(':')
     try {
         $freeGB = (Get-PSDrive -Name $sysDrive -ErrorAction Stop).Free / 1GB
-        if ($freeGB -lt 15) {
-            Write-Log ("only {0:N1} GB free on {1}: - Visual Studio wants ~20 GB" -f $freeGB, $env:SystemDrive) 'WARN'
+        if ($freeGB -lt 10) {
+            Write-Log ("only {0:N1} GB free on {1} - the full install wants ~10 GB" -f $freeGB, $env:SystemDrive) 'WARN'
         } else {
             Write-Log ("free space: {0:N1} GB" -f $freeGB)
         }
     } catch { }
 }
 
-# ==========================================================================
 # ==========================================================================
 #  PHASE 1 - debloat (delegated to Win11Debloat)
 # ==========================================================================
@@ -1124,22 +1027,22 @@ if ($opt.Debloat) {
             }
         }
     }
-
-    if ($opt.RemoveOneDrive) {
-        $setup = Join-Path $env:SystemRoot 'System32\OneDriveSetup.exe'
-        if (-not (Test-Path -LiteralPath $setup)) {
-            Write-Log 'OneDrive setup not found' 'SKIP'
-        } elseif ($WhatIfOnly) {
-            Write-Log 'would uninstall OneDrive'
-        } else {
-            Stop-Process -Name OneDrive -Force -ErrorAction SilentlyContinue
-            Start-Process -FilePath $setup -ArgumentList '/uninstall' -Wait
-            Remove-Item "$env:LOCALAPPDATA\Microsoft\OneDrive" -Recurse -Force -ErrorAction SilentlyContinue
-            Write-Log 'OneDrive uninstalled' 'OK'
-        }
-    }
 } else {
     Write-Log 'PHASE 1/4 - debloat skipped' 'SKIP'
+}
+
+if ($opt.RemoveOneDrive) {
+    $setup = Join-Path $env:SystemRoot 'System32\OneDriveSetup.exe'
+    if (-not (Test-Path -LiteralPath $setup)) {
+        Write-Log 'OneDrive setup not found' 'SKIP'
+    } elseif ($WhatIfOnly) {
+        Write-Log 'would uninstall OneDrive'
+    } else {
+        Stop-Process -Name OneDrive -Force -ErrorAction SilentlyContinue
+        Start-Process -FilePath $setup -ArgumentList '/uninstall' -Wait
+        Remove-Item "$env:LOCALAPPDATA\Microsoft\OneDrive" -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Log 'OneDrive uninstalled' 'OK'
+    }
 }
 
 # ==========================================================================
@@ -1190,25 +1093,30 @@ function Resolve-Winget {
 
 $winget = Resolve-Winget
 if (-not $winget -and -not $WhatIfOnly) {
-    Write-Log 'winget missing - installing App Installer from GitHub' 'WARN'
+    # Windows 11 ships App Installer, but on a fresh profile it is often not
+    # registered yet - registering it is enough to get winget.exe on PATH.
+    Write-Log 'winget missing - registering App Installer' 'WARN'
     try {
-        $rel = Invoke-RestMethod -Uri 'https://api.github.com/repos/microsoft/winget-cli/releases/latest' -UseBasicParsing
-        $asset = $rel.assets | Where-Object { $_.name -like '*DesktopAppInstaller*.msixbundle' } | Select-Object -First 1
-        if (-not $asset) { throw 'no msixbundle in latest release' }
-        $msix = Join-Path $env:TEMP $asset.name
-        Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $msix -UseBasicParsing
-        Add-AppxPackage -Path $msix
+        Add-AppxPackage -RegisterByFamilyName -MainPackage 'Microsoft.DesktopAppInstaller_8wekyb3d8bbwe' -ErrorAction Stop
+        Update-SessionPath
+        $env:Path += ';' + (Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps')
         $winget = Resolve-Winget
-        Write-Log 'App Installer installed' 'OK'
-    } catch {
-        Write-Log ("winget bootstrap failed: {0}" -f $_.Exception.Message) 'FAIL'
-        Write-Log 'install "App Installer" from the Microsoft Store and re-run' 'FAIL'
-    }
+    } catch { }
+    if ($winget) { Write-Log 'winget available' 'OK' }
+    else { Write-Log 'winget still missing - install "App Installer" from the Microsoft Store and re-run' 'FAIL' }
 }
+
+# winget exit codes that still mean "the package is there"
+$script:WingetOkCodes = @(
+    0
+    -1978335189   # 0x8A15002B  no applicable upgrade (already up to date)
+    -1978335135   # 0x8A150061  package already installed
+    -1978334967   # 0x8A150109  installed, reboot required to finish
+)
 
 function Install-WingetPackage {
     param([string]$Id)
-    if (-not $Force -and (Test-PackageInstalled -Id $Id)) {
+    if (Test-PackageInstalled -Id $Id) {
         Write-Log ("skip  {0} (present)" -f $Id) 'SKIP'
         [void]$script:Results.Add([pscustomobject]@{ Id = $Id; Status = 'skipped' })
         return
@@ -1220,11 +1128,9 @@ function Install-WingetPackage {
     }
     if (-not $winget) { Write-Log 'winget unavailable' 'FAIL'; return }
 
-    $base = @('install', '--id', $Id, '--exact', '--source', 'winget',
-              '--accept-package-agreements', '--accept-source-agreements', '--disable-interactivity')
-    & $winget @base --silent | Out-Null
-    if ($LASTEXITCODE -ne 0) { & $winget @base | Out-Null }   # some installers reject silent mode
-    if ($LASTEXITCODE -eq 0) {
+    & $winget install --id $Id --exact --source winget --silent --accept-package-agreements `
+        --accept-source-agreements --disable-interactivity | Out-Null
+    if ($script:WingetOkCodes -contains $LASTEXITCODE) {
         Write-Log ("installed {0}" -f $Id) 'OK'
         [void]$script:Results.Add([pscustomobject]@{ Id = $Id; Status = 'installed' })
     } else {
@@ -1249,36 +1155,6 @@ function Test-PackageInstalled {
     return $ok
 }
 
-function Install-VisualStudio {
-    $vs = $CONFIG.VisualStudio
-    if (-not $vs -or -not $vs.ProductId) { return }
-    if (-not $opt.Optional) {
-        Write-Log 'Visual Studio skipped (it is part of the optional group)' 'SKIP'
-        return
-    }
-    if (-not $Force -and (Test-PackageInstalled -Id $vs.ProductId)) {
-        Write-Log ("skip  {0} (present)" -f $vs.ProductId) 'SKIP'
-        return
-    }
-    $workloads = @($vs.Workloads | Where-Object { $_ } | Select-Object -Unique)
-    if ($WhatIfOnly) { Write-Log ("would install {0} with {1} workload(s)" -f $vs.ProductId, $workloads.Count); return }
-    if (-not $winget) { Write-Log 'winget unavailable' 'FAIL'; return }
-
-    Write-Log ("installing {0} - this takes a while" -f $vs.ProductId)
-    $override = '--quiet --wait --norestart'
-    foreach ($w in $workloads) { $override += " --add $w" }
-    if ($vs.IncludeRecommended) { $override += ' --includeRecommended' }
-
-    & $winget install --id $vs.ProductId --exact --source winget --accept-package-agreements `
-        --accept-source-agreements --disable-interactivity --override $override | Out-Null
-    if ($LASTEXITCODE -eq 0) {
-        Write-Log ("installed {0}" -f $vs.ProductId) 'OK'
-    } else {
-        Write-Log ("FAILED {0} (exit {1})" -f $vs.ProductId, $LASTEXITCODE) 'FAIL'
-        [void]$script:Failed.Add("package: $($vs.ProductId)")
-    }
-}
-
 Write-Log 'PHASE 3/4 - packages' 'STEP'
 
 if ($winget -and -not $WhatIfOnly) {
@@ -1296,19 +1172,13 @@ if ($winget -and -not $WhatIfOnly) {
     & $winget source update --disable-interactivity 2>&1 | Out-Null
 }
 
-$targets = New-Object System.Collections.Generic.List[string]
-$coreList = @($CONFIG.Packages.Core)
-if ($opt.OnlyRemote) { $coreList = @('Python.Python.3.15') }   # websockify needs it
-foreach ($id in $coreList) { if ($id) { $targets.Add($id) } }
-if ($opt.Optional) { foreach ($id in @($CONFIG.Packages.Optional)) { if ($id) { $targets.Add($id) } } }
-
-$excluded = @($CONFIG.Packages.Excluded | Where-Object { $_ })
-$vsProduct = $CONFIG.VisualStudio.ProductId
-$targets = @($targets | Where-Object { $excluded -notcontains $_ -and $_ -ne $vsProduct } | Select-Object -Unique)
+$targets = @($CONFIG.Packages.Core)
+if ($opt.OnlyRemote) { $targets = @($targets | Where-Object { $_ -like 'Python.Python.*' }) }   # websockify needs it
+if ($opt.Optional)   { $targets += @($CONFIG.Packages.Optional) }
+$targets = @($targets | Where-Object { $_ } | Select-Object -Unique)
 
 Write-Log ("{0} package(s) queued (optional: {1})" -f $targets.Count, $opt.Optional)
 foreach ($id in $targets) { Install-WingetPackage -Id $id }
-Install-VisualStudio
 
 # winget just changed PATH for this user - pick the new entries up.
 Update-SessionPath
@@ -1377,11 +1247,15 @@ if ($opt.OnlyRemote) {
     } else {
         $sshDir = Split-Path -Parent $sshKey
         if (-not (Test-Path -LiteralPath $sshDir)) { New-Item -ItemType Directory -Path $sshDir -Force | Out-Null }
-        $comment = $CONFIG.Git.SshKeyComment
-        if (-not $comment) { $comment = $opt.GitUserEmail }
+        $comment = $opt.GitUserEmail
         if (-not $comment) { $comment = "$env:USERNAME@$env:COMPUTERNAME" }
 
-        & $sshKeygen -t ed25519 -N '""' -C $comment -f $sshKey -q
+        # Empty passphrase. Windows PowerShell drops a bare '' argument, so it
+        # needs '""'; pwsh 7.3+ passes arguments verbatim and would turn '""'
+        # into a literal two-quote passphrase.
+        $emptyArg = '""'
+        if ($PSVersionTable.PSVersion.Major -ge 7 -and $PSNativeCommandArgumentPassing -ne 'Legacy') { $emptyArg = '' }
+        & $sshKeygen -t ed25519 -N $emptyArg -C $comment -f $sshKey -q
         if (Test-Path -LiteralPath $sshKey) {
             Write-Log ("SSH key created: {0}" -f $sshKey) 'OK'
             # keep the private key private: no inheritance, only the current user
@@ -1403,10 +1277,14 @@ if ($opt.OnlyRemote) {
     }
 }
 
-$pwshExe = Resolve-Pwsh
+# ------------------------------------------------------- powershell modules --
+$pwshExe = $null
+if (-not $opt.OnlyRemote) { $pwshExe = Resolve-Pwsh }
 
-if ($pwshExe -and -not $opt.OnlyRemote) {
-    foreach ($m in @($CONFIG.PostConfig.InstallPSModules)) {
+if ($opt.OnlyRemote) {
+    # nothing to do
+} elseif ($pwshExe) {
+    foreach ($m in @($CONFIG.PSModules)) {
         if (-not $m) { continue }
         if ($WhatIfOnly) { Write-Log "would install PS module $m"; continue }
         $cmd = "Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction SilentlyContinue; " +
@@ -1418,33 +1296,6 @@ if ($pwshExe -and -not $opt.OnlyRemote) {
     }
 } else {
     Write-Log 'pwsh not found - skipping PowerShell modules' 'WARN'
-}
-
-$bunExe = $null
-$bunCmd = Get-Command bun.exe -ErrorAction SilentlyContinue
-if ($bunCmd) { $bunExe = $bunCmd.Source }
-if (-not $bunExe -and (Test-Path "$env:USERPROFILE\.bun\bin\bun.exe")) { $bunExe = "$env:USERPROFILE\.bun\bin\bun.exe" }
-
-foreach ($pkg in @($CONFIG.PostConfig.BunGlobals)) {
-    if (-not $pkg) { continue }
-    if (-not $bunExe) { Write-Log 'bun not found - skipping bun globals' 'WARN'; break }
-    if ($WhatIfOnly) { Write-Log "would install bun global $pkg"; continue }
-    & $bunExe install -g $pkg *> $null
-    if ($LASTEXITCODE -eq 0) { Write-Log ("bun global {0}" -f $pkg) 'OK' }
-    else { Write-Log ("bun global {0} failed" -f $pkg) 'WARN' }
-}
-
-$npmExe = $null
-$npmCmd = Get-Command npm.cmd -ErrorAction SilentlyContinue
-if ($npmCmd) { $npmExe = $npmCmd.Source }
-
-foreach ($pkg in @($CONFIG.PostConfig.NpmGlobals)) {
-    if (-not $pkg) { continue }
-    if (-not $npmExe) { Write-Log 'npm not found - skipping npm globals' 'WARN'; break }
-    if ($WhatIfOnly) { Write-Log "would install npm global $pkg"; continue }
-    & $npmExe install -g $pkg --no-fund --no-audit *> $null
-    if ($LASTEXITCODE -eq 0) { Write-Log ("npm global {0}" -f $pkg) 'OK' }
-    else { Write-Log ("npm global {0} failed" -f $pkg) 'WARN' }
 }
 
 # -------------------------------------------------- remote access / startup --
