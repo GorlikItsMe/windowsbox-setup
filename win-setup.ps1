@@ -614,37 +614,62 @@ function Setup-NoVnc {
     $tsExe = $ts.Exe
     $tailIp = $ts.Ip
     $tailName = $ts.Name
-    if (-not $tailIp) {
-        Write-Log 'Tailscale is not up - noVNC will only listen on localhost until the next start (run "tailscale up")' 'WARN'
-    }
-
     $urlHost = '127.0.0.1'
     if ($tailIp)   { $urlHost = $tailIp }
     if ($tailName) { $urlHost = $tailName }
     $url = 'http://{0}:{1}/' -f $urlHost, $WebPort
 
+    # The launcher is a supervisor loop: it waits (without a time limit) for
+    # Tailscale to be logged in, then keeps websockify bound to the Tailscale
+    # address - restarting it when it dies or the address changes. So logging
+    # in to Tailscale after the setup needs no reboot.
     $wrapperText = @'
 <#
-    Starts websockify (the noVNC proxy) on the Tailscale address.
+    Keeps websockify (the noVNC proxy) running on the Tailscale address.
     Installed by win-setup.ps1 - runs from Task Scheduler as SYSTEM at boot.
 #>
 $ErrorActionPreference = 'Continue'
 $log = '__LOG__'
 $ts  = '__TS__'
-$ip  = $null
-for ($i = 0; $i -lt 60; $i++) {
-    try { $ip = @(& $ts ip -4 2>$null | Where-Object { $_ -match '^\d+\.\d+\.\d+\.\d+$' })[0] } catch { }
-    if ($ip) { break }
-    Start-Sleep -Seconds 5
+
+function Write-NoVncLog([string]$Message) {
+    Add-Content -LiteralPath $log -Value ("{0}  {1}" -f (Get-Date -Format 's'), $Message) -Encoding UTF8
 }
-if (-not $ip) { $ip = '127.0.0.1' }
-Add-Content -LiteralPath $log -Value ("{0}  websockify on {1}:__PORT__ -> 127.0.0.1:__VNC__" -f (Get-Date -Format 's'), $ip)
-& '__WS__' --web '__WEB__' ("{0}:__PORT__" -f $ip) '127.0.0.1:__VNC__' *>> $log
-exit $LASTEXITCODE
+function Get-TailIp {
+    try { return @(& $ts ip -4 2>$null | Where-Object { $_ -match '^\d+\.\d+\.\d+\.\d+$' })[0] } catch { return $null }
+}
+function Stop-Tree([int]$ProcessId) {
+    # python.exe in a venv spawns the real interpreter, so kill the whole tree.
+    & taskkill.exe /PID $ProcessId /T /F *> $null
+}
+
+Write-NoVncLog 'supervisor started'
+$proc = $null; $boundIp = $null; $waiting = $false
+while ($true) {
+    $ip = Get-TailIp
+    if ($proc -and ($proc.HasExited -or ($ip -and $ip -ne $boundIp))) {
+        if ($proc.HasExited) { Write-NoVncLog ("websockify exited (code {0})" -f $proc.ExitCode) }
+        else { Write-NoVncLog ("Tailscale address changed to {0} - restarting websockify" -f $ip); Stop-Tree $proc.Id }
+        $proc = $null
+        Start-Sleep -Seconds 2
+    }
+    if (-not $proc -and $ip) {
+        Write-NoVncLog ("websockify on {0}:__PORT__ -> 127.0.0.1:__VNC__" -f $ip)
+        $proc = Start-Process -FilePath '__PY__' -WindowStyle Hidden -PassThru `
+            -ArgumentList @('-m', 'websockify', '--web', '"__WEB__"', ("{0}:__PORT__" -f $ip), '127.0.0.1:__VNC__') `
+            -RedirectStandardOutput '__LOG__.out' -RedirectStandardError '__LOG__.err'
+        $null = $proc.Handle   # keeps the handle open, otherwise ExitCode is empty
+        $boundIp = $ip; $waiting = $false
+    } elseif (-not $proc -and -not $waiting) {
+        Write-NoVncLog 'waiting for Tailscale to be logged in'
+        $waiting = $true
+    }
+    Start-Sleep -Seconds 10
+}
 '@
     $wrapperText = $wrapperText.Replace('__LOG__', (Join-Path $base 'novnc.log'))
     $wrapperText = $wrapperText.Replace('__TS__', $(if ($tsExe) { $tsExe } else { 'tailscale.exe' }))
-    $wrapperText = $wrapperText.Replace('__WS__', $wsExe)
+    $wrapperText = $wrapperText.Replace('__PY__', $venvPy)
     $wrapperText = $wrapperText.Replace('__WEB__', $web)
     $wrapperText = $wrapperText.Replace('__PORT__', "$WebPort")
     $wrapperText = $wrapperText.Replace('__VNC__', "$VncPort")
@@ -665,8 +690,13 @@ exit $LASTEXITCODE
         [void]$script:Failed.Add('noVNC (firewall)')
     }
 
-    # Start at boot, no user session needed.
+    # Start at boot, no user session needed. Stop a previous run first (task
+    # and any websockify left over from it), or the port stays taken.
     try {
+        Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+        Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+            Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($venv, [StringComparison]::OrdinalIgnoreCase) } |
+            ForEach-Object { & taskkill.exe /PID $_.ProcessId /T /F *> $null }
         Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
         $action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
             -Argument ('-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}"' -f $wrapper)
@@ -684,23 +714,27 @@ exit $LASTEXITCODE
         [void]$script:Failed.Add('noVNC (task)')
     }
 
-    # Probe locally so a broken proxy is reported now, not when you open the URL.
-    $probeHost = '127.0.0.1'
-    if ($tailIp) { $probeHost = $tailIp }
-    $probeUrl = 'http://{0}:{1}/vnc.html' -f $probeHost, $WebPort
-    $alive = $false
-    for ($i = 0; $i -lt 12; $i++) {
-        Start-Sleep -Milliseconds 1500
-        try {
-            $resp = Invoke-WebRequest -Uri $probeUrl -UseBasicParsing -TimeoutSec 3 -ErrorAction Stop
-            if ($resp.StatusCode -eq 200) { $alive = $true; break }
-        } catch { }
-    }
-    if ($alive) {
-        Write-Log ("noVNC answers at {0}" -f $probeUrl) 'OK'
+    # Probe so a broken proxy is reported now, not when you open the URL.
+    # Without Tailscale there is nothing to probe yet - that is expected on a
+    # fresh machine, not an error.
+    if (-not $tailIp) {
+        Write-Log 'noVNC is installed and starts by itself once you log in to Tailscale (no reboot needed)' 'OK'
     } else {
-        Write-Log ("noVNC does not answer at {0} - check {1}" -f $probeUrl, (Join-Path $base 'novnc.log')) 'FAIL'
-        [void]$script:Failed.Add('noVNC (not answering)')
+        $probeUrl = 'http://{0}:{1}/vnc.html' -f $tailIp, $WebPort
+        $alive = $false
+        for ($i = 0; $i -lt 20; $i++) {
+            Start-Sleep -Milliseconds 1500
+            try {
+                $resp = Invoke-WebRequest -Uri $probeUrl -UseBasicParsing -TimeoutSec 3 -ErrorAction Stop
+                if ($resp.StatusCode -eq 200) { $alive = $true; break }
+            } catch { }
+        }
+        if ($alive) {
+            Write-Log ("noVNC answers at {0}" -f $probeUrl) 'OK'
+        } else {
+            Write-Log ("noVNC does not answer at {0} - check {1}" -f $probeUrl, (Join-Path $base 'novnc.log*')) 'FAIL'
+            [void]$script:Failed.Add('noVNC (not answering)')
+        }
     }
 
     Set-Content -LiteralPath $urlFile -Value $url -Encoding ASCII
@@ -1385,7 +1419,7 @@ if ($opt.Remote) {
         $body = @(('http://{0}:{1}/' -f $tsHost, $port))
     } else {
         $body = @(('http://{0}:{1}/   (MagicDNS name)' -f $env:COMPUTERNAME.ToLowerInvariant(), $port),
-                  'Works once Tailscale is logged in and the machine was rebooted.')
+                  'Starts by itself within ~10 seconds of logging in to Tailscale.')
     }
     $body += 'Reachable from your tailnet only, no VNC password.'
     Add-Step 'Remote desktop in the browser (noVNC)' $body

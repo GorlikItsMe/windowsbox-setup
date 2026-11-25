@@ -41,7 +41,9 @@ Everything is configured in the `$CONFIG` block at the top of `win-setup.ps1`.
 
 - **TightVNC** runs as a service, listening on `127.0.0.1` only, **without a password**.
 - **websockify + noVNC** serve the web client on the Tailscale address, port `6080`,
-  started at boot by the scheduled task `win-setup noVNC`.
+  started at boot by the scheduled task `win-setup noVNC`. It waits for Tailscale
+  to be logged in and restarts websockify if it dies or the address changes, so
+  logging in to Tailscale after the setup needs no reboot.
 - Firewall allows `6080` from `100.64.0.0/10` (tailnet) only and blocks `5900`.
 
 Open `http://<tailnet-host>:6080/` from any device in your tailnet. Anyone in your
