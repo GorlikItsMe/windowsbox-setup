@@ -200,7 +200,6 @@ $script:LogFile    = Join-Path $script:StateDir ("log-{0}.log" -f (Get-Date -For
 $script:AnswersFile = Join-Path $script:StateDir 'answers.json'
 $script:Results    = New-Object System.Collections.ArrayList
 $script:Failed     = New-Object System.Collections.ArrayList
-$script:NoVncUrl   = $null
 
 function Write-Log {
     param(
@@ -414,6 +413,21 @@ function Find-T3CodeExe {
 '@
 . ([scriptblock]::Create($script:FindT3CodeExeText))
 
+function Get-TailscaleInfo {
+    # Exe path, IPv4 and MagicDNS name; Ip/Name are $null while not logged in.
+    $info = @{ Exe = $null; Ip = $null; Name = $null }
+    $cmd = Get-Command tailscale.exe -ErrorAction SilentlyContinue
+    if ($cmd) { $info.Exe = $cmd.Source }
+    elseif (Test-Path 'C:\Program Files\Tailscale\tailscale.exe') { $info.Exe = 'C:\Program Files\Tailscale\tailscale.exe' }
+    if (-not $info.Exe) { return $info }
+    try { $info.Ip = @(& $info.Exe ip -4 2>$null | Where-Object { $_ -match '^\d+\.\d+\.\d+\.\d+$' })[0] } catch { }
+    try {
+        $status = (& $info.Exe status --json 2>$null | Out-String | ConvertFrom-Json)
+        if ($status.Self -and $status.Self.DNSName) { $info.Name = ([string]$status.Self.DNSName).TrimEnd('.') }
+    } catch { }
+    return $info
+}
+
 function Resolve-Pwsh {
     # PowerShell 7 may be an MSI (Program Files\PowerShell\7) or an MSIX with an
     # app-execution alias in WindowsApps; the alias is the only usable path there.
@@ -597,20 +611,10 @@ function Setup-NoVnc {
     [IO.File]::WriteAllText((Join-Path $web 'index.html'), $indexHtml, (New-Object System.Text.UTF8Encoding($false)))
 
     # Where may websockify listen? The Tailscale address, and nothing else.
-    $tsExe = $null
-    $tsCmd = Get-Command tailscale.exe -ErrorAction SilentlyContinue
-    if ($tsCmd) { $tsExe = $tsCmd.Source }
-    if (-not $tsExe -and (Test-Path 'C:\Program Files\Tailscale\tailscale.exe')) { $tsExe = 'C:\Program Files\Tailscale\tailscale.exe' }
-
-    $tailIp = $null
-    $tailName = $null
-    if ($tsExe) {
-        try { $tailIp = @(& $tsExe ip -4 2>$null | Where-Object { $_ -match '^\d+\.\d+\.\d+\.\d+$' })[0] } catch { }
-        try {
-            $status = (& $tsExe status --json 2>$null | Out-String | ConvertFrom-Json)
-            if ($status.Self -and $status.Self.DNSName) { $tailName = ([string]$status.Self.DNSName).TrimEnd('.') }
-        } catch { }
-    }
+    $ts = Get-TailscaleInfo
+    $tsExe = $ts.Exe
+    $tailIp = $ts.Ip
+    $tailName = $ts.Name
     if (-not $tailIp) {
         Write-Log 'Tailscale is not up - noVNC will only listen on localhost until the next start (run "tailscale up")' 'WARN'
     }
@@ -619,7 +623,6 @@ function Setup-NoVnc {
     if ($tailIp)   { $urlHost = $tailIp }
     if ($tailName) { $urlHost = $tailName }
     $url = 'http://{0}:{1}/' -f $urlHost, $WebPort
-    $script:NoVncUrl = $url
 
     $wrapperText = @'
 <#
@@ -1335,22 +1338,134 @@ Write-Log ("log: {0}" -f $script:LogFile)
 if ($WhatIfOnly) {
     Write-Log 'DRY RUN - nothing was changed' 'WARN'
 } else {
-    Write-Log 'done - reboot when convenient, then open a new terminal' 'WARN'
+    Write-Log 'done - the next steps are below' 'OK'
 }
 
-if (-not $WhatIfOnly -and $script:NoVncUrl) {
-    Write-Host ''
-    Write-Host '  noVNC (reachable from your tailnet only):' -ForegroundColor White
-    Write-Host ('  ' + $script:NoVncUrl) -ForegroundColor DarkGray
-    Write-Host ''
+# ==========================================================================
+#  next steps - what still needs a human (logins, tokens, pairing)
+#  Printed here and saved to the desktop.
+# ==========================================================================
+$planned = @($CONFIG.Packages.Core)
+if ($opt.Optional) { $planned += @($CONFIG.Packages.Optional) }
+function Test-Planned { param([string]$Id) return ($planned -contains $Id) }
+
+$script:NextSteps = New-Object System.Collections.Generic.List[string]
+function Add-Step {
+    param([string]$Title, [string[]]$Body)
+    $n = @($script:NextSteps | Where-Object { $_ -match '^\d+\. ' }).Count + 1
+    $script:NextSteps.Add(('{0}. {1}' -f $n, $Title))
+    foreach ($l in $Body) { $script:NextSteps.Add(('   ' + $l).TrimEnd()) }
+    $script:NextSteps.Add('')
 }
 
-if (-not $WhatIfOnly -and (Test-Path -LiteralPath ($sshKey + '.pub'))) {
-    Write-Host ''
-    Write-Host '  SSH key ready. Add it to GitHub (Settings -> SSH and GPG keys):' -ForegroundColor White
-    Write-Host ("  " + (Get-Content -LiteralPath ($sshKey + '.pub') -Raw).Trim()) -ForegroundColor DarkGray
-    Write-Host '  Then: gh auth login   (or paste the key in the browser)' -ForegroundColor DarkGray
-    Write-Host ''
+$ts   = Get-TailscaleInfo
+$tsUp = [bool]$ts.Ip
+$tsHost = $ts.Ip
+if ($ts.Name) { $tsHost = $ts.Name }
+
+if ($script:Failed.Count -gt 0) {
+    Add-Step 'Fix what failed - just run the script again, it is idempotent' (
+        @($script:Failed | ForEach-Object { "- $_" }) +
+        @('', ('powershell -c "irm {0} | iex"' -f $SourceUrl)))
+}
+
+Add-Step 'Reboot, then open a new terminal' @(
+    'New PATH entries (git, node, claude, opencode, ...) only appear in new terminals.')
+
+if ($ts.Exe) {
+    if ($tsUp) { $body = @("Already logged in: $tsHost") }
+    else       { $body = @('tailscale up', '(or click the Tailscale tray icon -> Log in)') }
+    $body += @('', 'Remote box? Disable key expiry for this machine, or it drops off the tailnet:',
+               'https://login.tailscale.com/admin/machines  (... -> Disable key expiry)')
+    Add-Step 'Log in to Tailscale' $body
+}
+
+if ($opt.Remote) {
+    $port = $CONFIG.Remote.WebPort
+    if ($tsUp) {
+        $body = @(('http://{0}:{1}/' -f $tsHost, $port))
+    } else {
+        $body = @(('http://{0}:{1}/   (MagicDNS name)' -f $env:COMPUTERNAME.ToLowerInvariant(), $port),
+                  'Works once Tailscale is logged in and the machine was rebooted.')
+    }
+    $body += 'Reachable from your tailnet only, no VNC password.'
+    Add-Step 'Remote desktop in the browser (noVNC)' $body
+}
+
+if (Test-Planned 'T3Tools.T3Code') {
+    Add-Step 'Pair T3 Code with your other devices' @(
+        'Start T3 Code once (it installs the "t3" command), then in a new terminal:',
+        't3 pair --tailscale',
+        'Open the link / scan the QR code on the other device. Needs Tailscale logged in.')
+}
+
+if (-not $opt.OnlyRemote) {
+    $body = @('gh auth login --web --git-protocol ssh',
+              'Answer "yes" to uploading your SSH public key - no copy-paste needed.')
+    if (Test-Path -LiteralPath ($sshKey + '.pub')) {
+        $body += @('', 'Or add the key by hand at https://github.com/settings/ssh/new :',
+                   (Get-Content -LiteralPath ($sshKey + '.pub') -Raw).Trim())
+    }
+    $body += @('', 'Check: ssh -T git@github.com')
+    Add-Step 'Connect to GitHub (gh CLI + SSH key)' $body
+
+    $gitName = $opt.GitUserName; $gitMail = $opt.GitUserEmail
+    if ($gitExe) {
+        $gitName = "$(& $gitExe config --global user.name 2>$null)".Trim()
+        $gitMail = "$(& $gitExe config --global user.email 2>$null)".Trim()
+    }
+    if (-not $gitName -or -not $gitMail) {
+        Add-Step 'Set your git identity' @(
+            'git config --global user.name  "Your Name"',
+            'git config --global user.email "ID+login@users.noreply.github.com"',
+            'Your private no-reply address: https://github.com/settings/emails')
+    }
+
+    if (Test-Planned 'Anthropic.ClaudeCode') {
+        Add-Step 'Log in to Claude Code' @('claude auth login', 'Check: claude auth status')
+    }
+
+    if (Test-Planned 'Anomaly.OpenCode') {
+        Add-Step 'Configure opencode (optional)' @(
+            'opencode auth login',
+            'Connect the model providers you use. Docs: https://opencode.ai/docs')
+    }
+
+    $apps = @()
+    if (Test-Planned 'Google.Antigravity')         { $apps += 'Antigravity     - sign in with your Google account  https://antigravity.google' }
+    if (Test-Planned 'Anysphere.Cursor')           { $apps += 'Cursor          - sign in                           https://cursor.com' }
+    if (Test-Planned 'Microsoft.VisualStudioCode') { $apps += 'VS Code         - Accounts (bottom left) -> Backup and Sync Settings' }
+    if (Test-Planned 'Anthropic.Claude')           { $apps += 'Claude Desktop  - sign in' }
+    if (Test-Planned 'Google.Chrome')              { $apps += 'Chrome          - sign in to sync bookmarks and passwords' }
+    if ($apps.Count -gt 0) { Add-Step 'Sign in to the desktop apps' $apps }
+
+    Add-Step 'Install Windows updates' @('start ms-settings:windowsupdate')
+}
+
+$desktop = [Environment]::GetFolderPath('Desktop')
+if (-not $desktop) { $desktop = Join-Path $env:USERPROFILE 'Desktop' }
+$stepsFile = Join-Path $desktop 'win-setup - next steps.txt'
+
+Write-Host ''
+Write-Host '==========================================================' -ForegroundColor White
+Write-Host '  NEXT STEPS' -ForegroundColor White
+Write-Host '==========================================================' -ForegroundColor White
+foreach ($l in $script:NextSteps) {
+    if ($l -match '^\d+\. ') { Write-Host ('  ' + $l) -ForegroundColor White }
+    else { Write-Host ('  ' + $l) -ForegroundColor Gray }
+}
+
+if ($WhatIfOnly) {
+    Write-Log ("would save the next steps to {0}" -f $stepsFile)
+} else {
+    $header = @('win-setup - next steps',
+                ('{0} | {1}' -f $env:COMPUTERNAME, (Get-Date -Format 'yyyy-MM-dd HH:mm')), '')
+    try {
+        [IO.File]::WriteAllLines($stepsFile, [string[]](@($header) + @($script:NextSteps)), (New-Object System.Text.UTF8Encoding($true)))
+        Write-Log ("next steps saved to {0}" -f $stepsFile) 'OK'
+    } catch {
+        Write-Log ("could not save the next steps: {0}" -f $_.Exception.Message) 'WARN'
+    }
 }
 
 if ($Pause -and (Test-CanPrompt)) {

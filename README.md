@@ -23,7 +23,10 @@ anything that failed.
 | 3. packages | installs everything below via `winget`, skipping what is already there |
 | 4. post-config | global git config + aliases, ed25519 SSH key + ssh-agent, `Terminal-Icons` / `posh-git`, noVNC, T3 Code autostart |
 
-At the end it prints a summary, the noVNC URL and your SSH public key.
+At the end it prints a **next steps** checklist of what still needs a human (Tailscale
+login, noVNC URL, `t3 pair --tailscale`, `gh auth login`, `claude auth login`,
+`opencode auth login`, app sign-ins, Windows Update) and saves it to
+`Desktop\win-setup - next steps.txt`.
 
 ## Packages
 
