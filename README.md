@@ -19,7 +19,7 @@ anything that failed.
 | Phase | |
 |---|---|
 | 1. debloat | runs the latest [Win11Debloat](https://github.com/Raphire/Win11Debloat) release (SHA-256 verified) with `-RunDefaults -Silent` plus a few personal tweaks: End Task in taskbar, file extensions, classic context menu, Explorer opens This PC, clean Start |
-| 2. settings | long paths, Developer Mode, `ExecutionPolicy RemoteSigned` |
+| 2. settings | long paths, Developer Mode, `ExecutionPolicy RemoteSigned`, DiagTrack (telemetry) service stopped and disabled |
 | 3. packages | installs everything below via `winget`, skipping what is already there |
 | 4. post-config | global git config + aliases, ed25519 SSH key + ssh-agent, `Terminal-Icons` / `posh-git`, noVNC, T3 Code autostart |
 

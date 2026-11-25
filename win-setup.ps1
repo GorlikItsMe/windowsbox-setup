@@ -123,6 +123,7 @@ $CONFIG = @{
         EnableDeveloperMode = $true
         ExecutionPolicy     = 'RemoteSigned'
         SetTimezone         = ''      # e.g. 'Central European Standard Time'
+        DisableDiagTrack    = $true   # stop the telemetry service (Win11Debloat only sets registry policies)
     }
 
     # Browser-based remote access. TightVNC listens on loopback only, with VNC
@@ -1118,6 +1119,19 @@ if ($s.SetTimezone) {
     else {
         try { Set-TimeZone -Id $s.SetTimezone; Write-Log ("time zone = {0}" -f $s.SetTimezone) 'OK' }
         catch { Write-Log ("unknown time zone {0}" -f $s.SetTimezone) 'WARN' }
+    }
+}
+if ($s.DisableDiagTrack -and -not $opt.OnlyRemote) {
+    if ($WhatIfOnly) { Write-Log 'would stop and disable the DiagTrack (telemetry) service' }
+    elseif (-not (Get-Service -Name DiagTrack -ErrorAction SilentlyContinue)) { Write-Log 'DiagTrack service not present' 'SKIP' }
+    else {
+        try {
+            Stop-Service -Name DiagTrack -Force -ErrorAction Stop
+            Set-Service -Name DiagTrack -StartupType Disabled -ErrorAction Stop
+            Write-Log 'DiagTrack (telemetry) service stopped and disabled' 'OK'
+        } catch {
+            Write-Log ("could not disable DiagTrack: {0}" -f $_.Exception.Message) 'WARN'
+        }
     }
 }
 
