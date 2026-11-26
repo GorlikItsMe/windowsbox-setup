@@ -40,6 +40,9 @@ Everything is configured in the `$CONFIG` block at the top of `win-setup.ps1`.
 ## Remote access (noVNC over Tailscale)
 
 - **TightVNC** runs as a service, listening on `127.0.0.1` only, **without a password**.
+  Loopback connections are allowed (`AllowLoopback=1`); websockify connects through
+  `127.0.0.1`, and without this noVNC fails with "Sorry, loopback connections are not
+  enabled". Re-running the script applies this to an existing install.
 - **websockify + noVNC** serve the web client on the Tailscale address, port `6080`,
   started at boot by the scheduled task `win-setup noVNC`. It waits for Tailscale
   to be logged in and restarts websockify if it dies or the address changes, so

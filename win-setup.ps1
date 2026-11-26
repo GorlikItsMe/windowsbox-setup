@@ -451,15 +451,36 @@ function Resolve-Pwsh {
     return $null
 }
 
+function Set-TightVncLoopback {
+    # websockify reaches TightVNC on 127.0.0.1, and TightVNC rejects loopback
+    # clients unless AllowLoopback=1 ("Sorry, loopback connections are not
+    # enabled"). Applied on every run so existing installs get fixed too.
+    $key = 'HKLM:\SOFTWARE\TightVNC\Server'
+    if ($WhatIfOnly) { Write-Log 'would make sure TightVNC accepts loopback connections (AllowLoopback=1)'; return }
+    if (-not (Test-Path -LiteralPath $key)) {
+        Write-Log 'TightVNC registry key not found - enable "Allow loopback connections" in TightVNC Server' 'WARN'
+        return
+    }
+    $current = (Get-ItemProperty -LiteralPath $key -Name 'AllowLoopback' -ErrorAction SilentlyContinue).AllowLoopback
+    if ("$current" -eq '1') {
+        Write-Log 'TightVNC already accepts loopback connections' 'SKIP'
+        return
+    }
+    Set-ItemProperty -LiteralPath $key -Name 'AllowLoopback' -Value 1 -Type DWord -Force
+    Restart-Service -Name 'tvnserver' -Force -ErrorAction SilentlyContinue
+    Write-Log 'TightVNC now accepts loopback connections (needed by noVNC)' 'OK'
+}
+
 function Install-TightVnc {
     param([int]$Port)
 
     $svc = Get-Service -Name 'tvnserver' -ErrorAction SilentlyContinue
     if ($svc) {
         Write-Log 'TightVNC already installed' 'SKIP'
+        Set-TightVncLoopback
         return $true
     }
-    if ($WhatIfOnly) { Write-Log ("would install TightVNC (loopback only, no password, port {0})" -f $Port); return $true }
+    if ($WhatIfOnly) { Write-Log ("would install TightVNC (loopback only, no password, port {0})" -f $Port); Set-TightVncLoopback; return $true }
     if (-not $winget) { Write-Log 'winget unavailable - cannot install TightVNC' 'FAIL'; return $false }
 
     # Property names verified against the 2.8.90 MSI ("SET_*" + "VALUE_OF_*" pairs).
@@ -467,6 +488,7 @@ function Install-TightVnc {
     $msiArgs = '/quiet ADDLOCAL=Server SERVER_REGISTER_AS_SERVICE=1 SERVER_ADD_FIREWALL_EXCEPTION=0 ' +
                'SET_RFBPORT=1 VALUE_OF_RFBPORT={0} ' +
                'SET_LOOPBACKONLY=1 VALUE_OF_LOOPBACKONLY=1 ' +
+               'SET_ALLOWLOOPBACK=1 VALUE_OF_ALLOWLOOPBACK=1 ' +
                'SET_USEVNCAUTHENTICATION=1 VALUE_OF_USEVNCAUTHENTICATION=0 ' +
                'SET_RUNCONTROLINTERFACE=0'
     $msiArgs = $msiArgs -f $Port
@@ -503,6 +525,7 @@ function Install-TightVnc {
     } else {
         Write-Log 'TightVNC registry key not found - check the password setting in TightVNC Server' 'WARN'
     }
+    Set-TightVncLoopback
 
     try {
         $listen = @(Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue |
