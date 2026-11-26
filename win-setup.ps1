@@ -51,10 +51,12 @@ param(
     [switch] $NoOptional,
     [switch] $RemoveOneDrive,
     [switch] $NoRemote,
+    [switch] $NoSsh,
     [switch] $NoT3Autostart,
     [switch] $OnlyRemote,
     [string] $GitUserName = '',
     [string] $GitUserEmail = '',
+    [string] $SshGitHubUser = '',
     [string] $Answers = ''
 )
 
@@ -139,8 +141,23 @@ $CONFIG = @{
         VncPort      = 5900
     }
 
+    # OpenSSH Server (the Windows optional feature). Same model as noVNC: the
+    # firewall only lets the tailnet in. Admin accounts read their keys from
+    # C:\ProgramData\ssh\administrators_authorized_keys, not ~/.ssh.
+    Ssh = @{
+        EnableServer = $true
+        TailnetOnly  = $true          # port 22 open to 100.64.0.0/10 only
+        DefaultShell = 'pwsh'         # 'pwsh' (falls back to 'powershell'), 'powershell' or 'cmd'
+        # Authorize the public keys of a GitHub account (https://github.com/<login>.keys).
+        # Needed when the Windows account has no password - Windows refuses
+        # network logons with a blank password. Empty = ask at the prompt
+        # (empty answer = skip). Keys already in the file are kept; re-run the
+        # script to pick up new GitHub keys.
+        GitHubUser   = ''
+    }
+
     Autostart = @{
-        T3Code = $true                # start T3 Code minimized at login
+        T3Code = $true               # start T3 Code minimized at login
     }
 
     Packages = @{
@@ -766,6 +783,154 @@ while ($true) {
     Set-Content -LiteralPath $urlFile -Value $url -Encoding ASCII
 }
 
+function Get-GitHubSshKeys {
+    # Public SSH keys of a GitHub account. Throws with a readable message when
+    # the login is malformed, unknown, has no keys, or GitHub is unreachable.
+    param([string]$GitHubUser)
+    if ($GitHubUser -notmatch '^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$') {
+        throw ("'{0}' is not a valid GitHub login" -f $GitHubUser)
+    }
+    $url = 'https://github.com/{0}.keys' -f $GitHubUser
+    try {
+        $raw = Invoke-RestMethod -Uri $url -UseBasicParsing -ErrorAction Stop
+    } catch {
+        $code = $null
+        try { $code = [int]$_.Exception.Response.StatusCode } catch { }
+        if ($code -eq 404) { throw ("GitHub user '{0}' does not exist" -f $GitHubUser) }
+        throw ("could not fetch {0}: {1}" -f $url, $_.Exception.Message)
+    }
+    $keys = @("$raw" -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -match '^(ssh-|ecdsa-|sk-)\S+ \S+' })
+    if ($keys.Count -eq 0) { throw ("GitHub user '{0}' has no public SSH keys" -f $GitHubUser) }
+    return $keys
+}
+
+function Set-SshGitHubKeys {
+    param([string]$GitHubUser)
+    # sshd reads administrators_authorized_keys for members of Administrators
+    # and ~/.ssh/authorized_keys for everyone else. Write both, so it works
+    # whether or not this account stays an admin. Existing keys are kept.
+    try {
+        $keys = @(Get-GitHubSshKeys -GitHubUser $GitHubUser)
+    } catch {
+        Write-Log $_.Exception.Message 'FAIL'
+        [void]$script:Failed.Add('SSH keys from GitHub')
+        return
+    }
+
+    $adminFile = Join-Path $env:ProgramData 'ssh\administrators_authorized_keys'
+    $userFile  = Join-Path $env:USERPROFILE '.ssh\authorized_keys'
+    $utf8 = New-Object System.Text.UTF8Encoding($false)
+    foreach ($file in $adminFile, $userFile) {
+        $dir = Split-Path -Parent $file
+        if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+        $existing = @()
+        if (Test-Path -LiteralPath $file) { $existing = @(Get-Content -LiteralPath $file | Where-Object { $_.Trim() }) }
+        # compare by "type base64", ignoring the comment
+        $known = @{}
+        foreach ($l in $existing) { $p = $l.Trim() -split '\s+'; if ($p.Count -ge 2) { $known[$p[0] + ' ' + $p[1]] = $true } }
+        $added = 0
+        $lines = New-Object System.Collections.Generic.List[string]
+        foreach ($l in $existing) { $lines.Add($l) }
+        foreach ($k in $keys) {
+            $p = $k -split '\s+'
+            if ($known.ContainsKey($p[0] + ' ' + $p[1])) { continue }
+            $lines.Add(('{0} {1} github:{2}' -f $p[0], $p[1], $GitHubUser))
+            $added++
+        }
+        [IO.File]::WriteAllLines($file, [string[]]$lines, $utf8)
+        if ($file -eq $adminFile) {
+            # sshd ignores this file unless only Administrators and SYSTEM can touch it
+            & icacls.exe $file /inheritance:r /grant '*S-1-5-32-544:F' /grant '*S-1-5-18:F' *> $null
+        }
+        Write-Log ("{0}: {1} GitHub key(s) added, {2} total" -f $file, $added, $lines.Count) 'OK'
+    }
+}
+
+function Install-SshServer {
+    $cfg = $CONFIG.Ssh
+    $ruleName = 'win-setup SSH'
+    if ($WhatIfOnly) {
+        $scope = 'everywhere'
+        if ($cfg.TailnetOnly) { $scope = 'the tailnet only' }
+        Write-Log ("would install OpenSSH Server (sshd, automatic start, port 22 open to {0})" -f $scope)
+        if ($opt.SshGitHubUser) { Write-Log ("would authorize the SSH keys from https://github.com/{0}.keys" -f $opt.SshGitHubUser) }
+        return
+    }
+
+    if (Get-Service -Name 'sshd' -ErrorAction SilentlyContinue) {
+        Write-Log 'OpenSSH Server already installed' 'SKIP'
+    } else {
+        $cap = @(Get-WindowsCapability -Online -Name 'OpenSSH.Server*' -ErrorAction SilentlyContinue) | Select-Object -First 1
+        if (-not $cap) {
+            Write-Log 'OpenSSH Server capability not offered by this Windows' 'FAIL'
+            [void]$script:Failed.Add('OpenSSH Server (capability)')
+            return
+        }
+        Write-Log 'installing OpenSSH Server (Windows feature, can take a few minutes)'
+        try {
+            Add-WindowsCapability -Online -Name $cap.Name -ErrorAction Stop | Out-Null
+        } catch {
+            Write-Log ("could not install OpenSSH Server: {0}" -f $_.Exception.Message) 'FAIL'
+            [void]$script:Failed.Add('OpenSSH Server (install)')
+            return
+        }
+        if (-not (Get-Service -Name 'sshd' -ErrorAction SilentlyContinue)) {
+            Write-Log 'sshd service not found after install - a reboot may be needed, then re-run' 'FAIL'
+            [void]$script:Failed.Add('OpenSSH Server (service)')
+            return
+        }
+        Write-Log 'OpenSSH Server installed' 'OK'
+    }
+
+    # Default shell for ssh sessions. sshd runs as SYSTEM, so the per-user
+    # WindowsApps alias of pwsh is useless here - only a real install counts.
+    $winPs = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $shell = $null
+    switch ($cfg.DefaultShell) {
+        'pwsh' {
+            $shell = Join-Path $env:ProgramFiles 'PowerShell\7\pwsh.exe'
+            if (-not (Test-Path -LiteralPath $shell)) { $shell = $winPs }
+        }
+        'powershell' { $shell = $winPs }
+    }
+    $sshKeyPath = 'HKLM:\SOFTWARE\OpenSSH'
+    if (-not (Test-Path -LiteralPath $sshKeyPath)) { New-Item -Path $sshKeyPath -Force | Out-Null }
+    if ($shell) {
+        New-ItemProperty -Path $sshKeyPath -Name 'DefaultShell' -Value $shell -PropertyType String -Force | Out-Null
+        Write-Log ("ssh default shell: {0}" -f $shell) 'OK'
+    } else {
+        Remove-ItemProperty -Path $sshKeyPath -Name 'DefaultShell' -ErrorAction SilentlyContinue
+        Write-Log 'ssh default shell: cmd' 'OK'
+    }
+
+    # Firewall: the feature adds "OpenSSH-Server-In-TCP" open to everyone;
+    # replace it with our own rule, limited to the tailnet when configured.
+    try {
+        Get-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -ErrorAction SilentlyContinue | Disable-NetFirewallRule
+        Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+        $remote = 'Any'
+        if ($cfg.TailnetOnly) { $remote = '100.64.0.0/10' }
+        New-NetFirewallRule -DisplayName $ruleName -Direction Inbound -Action Allow `
+            -Protocol TCP -LocalPort 22 -RemoteAddress $remote -Profile Any | Out-Null
+        if ($cfg.TailnetOnly) { Write-Log 'firewall: SSH open to the tailnet only' 'OK' }
+        else { Write-Log 'firewall: SSH open to every network' 'WARN' }
+    } catch {
+        Write-Log ("could not set the SSH firewall rule: {0}" -f $_.Exception.Message) 'FAIL'
+        [void]$script:Failed.Add('OpenSSH Server (firewall)')
+    }
+
+    if ($opt.SshGitHubUser) { Set-SshGitHubKeys -GitHubUser $opt.SshGitHubUser }
+
+    try {
+        Set-Service -Name 'sshd' -StartupType Automatic -ErrorAction Stop
+        Restart-Service -Name 'sshd' -Force -ErrorAction Stop   # restart picks up the shell change
+        Write-Log 'sshd running, starts automatically' 'OK'
+    } catch {
+        Write-Log ("could not start sshd: {0}" -f $_.Exception.Message) 'FAIL'
+        [void]$script:Failed.Add('OpenSSH Server (start)')
+    }
+}
+
 function Set-T3CodeAutostart {
     $dir      = Join-Path $script:StateDir 'T3CodeStartup'
     $launcher = Join-Path $dir 'start-t3code-minimized.ps1'
@@ -906,10 +1071,12 @@ $opt = [ordered]@{
     Optional       = (-not $NoOptional)
     RemoveOneDrive = [bool]$RemoveOneDrive
     Remote         = (([bool]$CONFIG.Remote.EnableNoVNC) -and (-not $NoRemote))
+    Ssh            = (([bool]$CONFIG.Ssh.EnableServer) -and (-not $NoSsh))
     AutostartT3Code = (([bool]$CONFIG.Autostart.T3Code) -and (-not $NoT3Autostart))
     OnlyRemote     = [bool]$OnlyRemote
     GitUserName    = $GitUserName
     GitUserEmail   = $GitUserEmail
+    SshGitHubUser  = $SshGitHubUser
 }
 
 # A relaunched (elevated) child gets its choices from a JSON file, never from
@@ -927,6 +1094,7 @@ if ($Answers -and (Test-Path -LiteralPath $Answers)) {
 
 if (-not $opt.GitUserName)  { $opt.GitUserName  = $CONFIG.Git.UserName }
 if (-not $opt.GitUserEmail) { $opt.GitUserEmail = $CONFIG.Git.UserEmail }
+if (-not $opt.SshGitHubUser) { $opt.SshGitHubUser = $CONFIG.Ssh.GitHubUser }
 
 # -OnlyRemote: rebuild just the remote stack (and its autostart), nothing else.
 if ($opt.OnlyRemote) {
@@ -948,11 +1116,34 @@ if (-not $Revert -and -not $Yes -and -not $Answers -and -not $WhatIfOnly -and -n
     $opt.Optional = Read-YesNo '  install optional group (VS Code Insiders, Claude Desktop)' $opt.Optional
     $opt.RemoveOneDrive = Read-YesNo '  remove OneDrive completely' $opt.RemoveOneDrive
     $opt.Remote = Read-YesNo '  remote access: noVNC over Tailscale (TightVNC)' $opt.Remote
+    $opt.Ssh = Read-YesNo '  OpenSSH server (tailnet only)' $opt.Ssh
     $opt.AutostartT3Code = Read-YesNo '  start T3 Code minimized at login' $opt.AutostartT3Code
     if (Read-YesNo '  set git user.name / user.email now' $true) {
         $opt.GitUserName  = Read-Text '    git user.name'  $opt.GitUserName
         $opt.GitUserEmail = Read-Text '    git user.email' $opt.GitUserEmail
     }
+    Write-Host ''
+}
+
+# Whose GitHub SSH keys may log in. Asked before elevation, also with
+# -OnlyRemote; a login from -SshGitHubUser / $CONFIG is checked first and only
+# asked again when it does not work. Empty answer = no keys.
+if ($opt.Ssh -and -not $Revert -and -not $Yes -and -not $Answers -and -not $WhatIfOnly -and (Test-CanPrompt)) {
+    $login = $opt.SshGitHubUser
+    $ask = -not $login
+    while ($true) {
+        if ($ask) { $login = Read-Text '  GitHub login whose SSH keys may log in (ENTER = skip)' '' }
+        if (-not $login) { Write-Host '    no GitHub keys - SSH will need a Windows password' -ForegroundColor DarkGray; break }
+        try {
+            $found = @(Get-GitHubSshKeys -GitHubUser $login)
+            Write-Host ("    {0}: {1} key(s)" -f $login, $found.Count) -ForegroundColor Green
+            break
+        } catch {
+            Write-Host ("    {0} - try again" -f $_.Exception.Message) -ForegroundColor Yellow
+            $ask = $true
+        }
+    }
+    $opt.SshGitHubUser = $login
     Write-Host ''
 }
 
@@ -1023,8 +1214,8 @@ Write-Host '  win-setup: debloat + developer toolchain' -ForegroundColor White
 Write-Host ('  {0} | {1}' -f $env:COMPUTERNAME, $(if ($WhatIfOnly) { 'DRY RUN' } else { (Get-Date -Format 'yyyy-MM-dd HH:mm') })) -ForegroundColor DarkGray
 Write-Host '==========================================================' -ForegroundColor White
 Write-Log ("log: {0}" -f $script:LogFile)
-Write-Log ("debloat: {0} (aggressive: {1}) | optional: {2} | remote: {3} | t3 autostart: {4}" -f `
-    $opt.Debloat, $opt.Aggressive, $opt.Optional, $opt.Remote, $opt.AutostartT3Code)
+Write-Log ("debloat: {0} (aggressive: {1}) | optional: {2} | remote: {3} | ssh: {4} | t3 autostart: {5}" -f `
+    $opt.Debloat, $opt.Aggressive, $opt.Optional, $opt.Remote, $opt.Ssh, $opt.AutostartT3Code)
 
 $os = Get-CimInstance Win32_OperatingSystem
 if ([int]$os.BuildNumber -lt 22000) { Write-Log 'optimised for Windows 11; older builds may differ' 'WARN' }
@@ -1407,6 +1598,12 @@ if ($opt.Remote) {
     Write-Log 'noVNC skipped' 'SKIP'
 }
 
+if ($opt.Ssh) {
+    Install-SshServer
+} else {
+    Write-Log 'OpenSSH Server skipped' 'SKIP'
+}
+
 if ($opt.AutostartT3Code) {
     Set-T3CodeAutostart
 } else {
@@ -1486,6 +1683,22 @@ if ($opt.Remote) {
     }
     $body += 'Reachable from your tailnet only, no VNC password.'
     Add-Step 'Remote desktop in the browser (noVNC)' $body
+}
+
+if ($opt.Ssh) {
+    $sshHost = $tsHost
+    if (-not $sshHost) { $sshHost = $env:COMPUTERNAME.ToLowerInvariant() }
+    $keysFile = Join-Path $env:ProgramData 'ssh\administrators_authorized_keys'
+    $body = @(('ssh {0}@{1}' -f $env:USERNAME, $sshHost))
+    if ($CONFIG.Ssh.TailnetOnly) { $body += 'Reachable from your tailnet only.' }
+    if ($opt.SshGitHubUser) {
+        $body += ("Log in with any SSH key from https://github.com/{0}.keys - re-run the script after adding one." -f $opt.SshGitHubUser)
+    }
+    $body += @('Password login needs a Windows password (a blank one is refused; Microsoft account: its password, not the PIN).',
+               '', 'Another key by hand: admin accounts ignore ~/.ssh/authorized_keys. In an administrator PowerShell:',
+               ("Add-Content '{0}' 'ssh-ed25519 AAAA... you@laptop'" -f $keysFile),
+               ("icacls.exe '{0}' /inheritance:r /grant '*S-1-5-32-544:F' /grant 'SYSTEM:F'" -f $keysFile))
+    Add-Step 'Log in over SSH' $body
 }
 
 if (Test-Planned 'T3Tools.T3Code') {

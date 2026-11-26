@@ -21,7 +21,7 @@ anything that failed.
 | 1. debloat | runs the latest [Win11Debloat](https://github.com/Raphire/Win11Debloat) release (SHA-256 verified) with `-RunDefaults -Silent` plus a few personal tweaks: End Task in taskbar, file extensions, classic context menu, Explorer opens This PC, clean Start, no sharing of updates with other PCs |
 | 2. settings | long paths, Developer Mode, `ExecutionPolicy RemoteSigned`, DiagTrack (telemetry) service disabled, hibernation off, Storage Sense on (weekly: temp files, recycle bin > 30 days) |
 | 3. packages | installs everything below via `winget`, skipping what is already there |
-| 4. post-config | global git config + aliases, ed25519 SSH key + ssh-agent, `Terminal-Icons` / `posh-git`, noVNC, T3 Code autostart |
+| 4. post-config | global git config + aliases, ed25519 SSH key + ssh-agent, `Terminal-Icons` / `posh-git`, noVNC, OpenSSH Server, T3 Code autostart |
 
 At the end it prints a **next steps** checklist of what still needs a human (Tailscale
 login, noVNC URL, `t3 pair --tailscale`, `gh auth login`, `claude auth login`,
@@ -53,6 +53,21 @@ Open `http://<tailnet-host>:6080/` from any device in your tailnet. Anyone in yo
 tailnet can take over the desktop. If that's too much, enable "Require VNC
 authentication" in TightVNC Server and append `&password=...` to the URL.
 
+## SSH server
+
+- **OpenSSH Server** (the Windows optional feature) runs as the `sshd` service with
+  automatic start. Default shell: PowerShell 7 (Windows PowerShell if pwsh is missing).
+- The stock `OpenSSH-Server-In-TCP` rule (open to everyone) is disabled and replaced
+  by `win-setup SSH`, which allows port `22` from `100.64.0.0/10` (tailnet) only.
+  Set `$CONFIG.Ssh.TailnetOnly = $false` to open it everywhere.
+- The script asks for a GitHub login (ENTER skips; an unknown login, one without
+  keys, or a failed download asks again). Its public keys from
+  `https://github.com/<login>.keys` are added to `C:\ProgramData\ssh\administrators_authorized_keys` (what sshd reads for
+  admins) and `~/.ssh/authorized_keys`. Existing keys are kept; re-run the script to
+  pick up keys you add on GitHub later. This is the way in for an account without a
+  password - Windows refuses network logons with a blank password.
+- `ssh <user>@<tailnet-host>`.
+
 ## T3 Code autostart
 
 T3 Code has no "start minimized" option, so the script adds a `T3 Code (minimized)`
@@ -69,8 +84,10 @@ shortcut to `shell:startup` that launches it and minimizes the main window.
 | `-RemoveOneDrive` | uninstall OneDrive |
 | `-NoOptional` | Core packages only |
 | `-NoRemote` | no TightVNC / noVNC |
+| `-NoSsh` | no OpenSSH Server |
+| `-SshGitHubUser <login>` | authorize this GitHub user's SSH keys without the prompt (also `$CONFIG.Ssh.GitHubUser`) |
 | `-NoT3Autostart` | no T3 Code autostart |
-| `-OnlyRemote` | only (re)build noVNC and T3 autostart |
+| `-OnlyRemote` | only (re)build noVNC, OpenSSH Server and T3 autostart |
 | `-GitUserName`, `-GitUserEmail` | set git identity without the prompt |
 | `-Revert` | open Win11Debloat's restore window (its own registry backups) |
 
